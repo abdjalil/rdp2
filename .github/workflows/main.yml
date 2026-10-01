@@ -1,75 +1,34 @@
-name: Setup RDP + SSH on Linux (via Tailscale)
+name: Get Tailscale RDP/SSH Link
 
 on:
   workflow_dispatch:
     inputs:
       target_name:
-        description: 'Tailscale machine name (run: tailscale status on target)'
+        description: 'Tailscale machine name (e.g. my-linux-box)'
         required: true
         default: 'my-linux-box'
-      ssh_port:
-        description: 'SSH port'
-        required: false
-        default: '22'
-      desktop:
-        description: 'Desktop environment to install'
-        required: true
-        type: choice
-        default: 'xfce'
-        options:
-          - xfce
-          - gnome
-          - kde
-          - lxqt
-          - none
-      enable_rdp:
-        description: 'Install and enable xrdp?'
-        required: true
-        type: boolean
-        default: true
-      enable_ssh:
-        description: 'Ensure SSH server is enabled?'
-        required: true
-        type: boolean
-        default: true
-      set_passwords:
-        description: 'Set root + admin passwords from secrets?'
-        required: true
-        type: boolean
-        default: true
-      allow_root_login:
-        description: 'Allow root SSH/RDP login? (NOT recommended)'
-        required: true
-        type: boolean
-        default: false
 
 jobs:
-  setup-remote:
-    name: Provision RDP/SSH on ${{ inputs.target_name }}
+  get-link:
+    name: Resolve Tailscale address for ${{ inputs.target_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ---------- 1. Join tailnet ----------
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           auth-key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           tags: tag:ci
 
-      # ---------- 2. Auto-detect target IP ----------
-      - name: Resolve target IP from Tailscale
+      - name: Resolve target and print connection info
         id: resolve
         run: |
           set -euo pipefail
           TARGET="${{ inputs.target_name }}"
-          echo "▶ Looking up '$TARGET' in tailnet..."
 
           for i in $(seq 1 12); do
-            tailscale status --json >/tmp/ts.json 2>/dev/null && break
+            tailscale status --json > /tmp/ts.json 2>/dev/null && break
             sleep 5
           done
 
@@ -87,185 +46,74 @@ jobs:
 
           if [ -z "$IP" ] || [ "$IP" = "null" ]; then
             echo "❌ '$TARGET' not found. Available peers:"
-            jq -r '.Peer[]? | "  - \(.HostName)  (\(.TailscaleIPs[0]))"' /tmp/ts.json
+            jq -r '.Peer[]? | "  - \(.HostName)  (\(.TailscaleIPs[0]))  [\(.OS)]"' /tmp/ts.json
             exit 1
           fi
 
-          echo "✅ Resolved $TARGET → $IP"
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          DNS=$(jq -r --arg t "$TARGET" '
+            .Peer[]?
+            | select(
+                (.DNSName // "" | sub("\\.$";"")) as $dns
+                | (.HostName // "")
+                | . == $t or $dns == $t or ($dns | startswith($t + "."))
+              )
+            | .DNSName
+          ' /tmp/ts.json | head -n1 | sed 's/\.$//')
 
-      # ---------- 3. Setup SSH key ----------
-      - name: Setup SSH key
+          echo "ip=$IP"   >> "$GITHUB_OUTPUT"
+          echo "dns=$DNS" >> "$GITHUB_OUTPUT"
+
+      - name: Print connection links
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p ${{ inputs.ssh_port }} -H ${{ steps.resolve.outputs.ip }} \
-            >> ~/.ssh/known_hosts 2>/dev/null || true
+          IP="${{ steps.resolve.outputs.ip }}"
+          DNS="${{ steps.resolve.outputs.dns }}"
 
-      # ---------- 4. Provision remotely ----------
-      - name: Provision RDP + SSH
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          ROOT_PASSWORD:  ${{ secrets.ROOT_PASSWORD }}
-          ADMIN_USER:     ${{ secrets.ADMIN_USER }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-        with:
-          host: ${{ steps.resolve.outputs.ip }}
-          username: ${{ secrets.SSH_USER || 'root' }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ inputs.ssh_port }}
-          timeout: 20m
-          script_stop: true
-          envs: ROOT_PASSWORD,ADMIN_USER,ADMIN_PASSWORD,DESKTOP,ENABLE_RDP,ENABLE_SSH,SET_PASSWORDS,ALLOW_ROOT
-          script: |
-            set -euo pipefail
-            DESKTOP="${{ inputs.desktop }}"
-            ENABLE_RDP="${{ inputs.enable_rdp }}"
-            ENABLE_SSH="${{ inputs.enable_ssh }}"
-            SET_PASSWORDS="${{ inputs.set_passwords }}"
-            ALLOW_ROOT="${{ inputs.allow_root_login }}"
+          {
+            echo "# 🔗 Connection Links for \`${{ inputs.target_name }}\`"
+            echo ""
+            echo "## 🌐 Tailscale IP"
+            echo '```'
+            echo "$IP"
+            echo '```'
+            echo ""
+            echo "## 🖥️ SSH — PuTTY / terminal"
+            echo '```'
+            echo "ssh <your-user>@$IP"
+            echo "# or MagicDNS:"
+            echo "ssh <your-user>@$DNS"
+            echo '```'
+            echo ""
+            echo "### PuTTY fields"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Host Name | \`$IP\` |"
+            echo "| Port | \`22\` |"
+            echo "| Connection type | SSH |"
+            echo ""
+            echo "## 🪟 RDP — Windows mstsc"
+            echo '```'
+            echo "mstsc /v:$IP:3389"
+            echo "# or MagicDNS:"
+            echo "mstsc /v:$DNS:3389"
+            echo '```'
+            echo ""
+            echo "### Remote Desktop fields"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Computer | \`$IP:3389\` |"
+            echo "| Username | *your Linux user* |"
+            echo "| Password | *your Linux password* |"
+            echo ""
+            echo "## 📋 Copy-paste"
+            echo '```'
+            echo "SSH: ssh <user>@$IP"
+            echo "RDP: mstsc /v:$IP:3389"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-            echo "▶ Detecting distro..."
-            . /etc/os-release
-            echo "Distro: $ID $VERSION_ID"
-
-            case "$ID" in
-              ubuntu|debian|pop|linuxmint) PKG=apt; sudo apt update -y ;;
-              fedora|rhel|centos|rocky|almalinux) PKG=dnf ;;
-              arch|manjaro) PKG=pacman ;;
-              *) echo "Unsupported distro: $ID"; exit 1 ;;
-            esac
-
-            install() {
-              case "$PKG" in
-                apt)    sudo DEBIAN_FRONTEND=noninteractive apt install -y "$@" ;;
-                dnf)    sudo dnf install -y "$@" ;;
-                pacman) sudo pacman -Sy --noconfirm "$@" ;;
-              esac
-            }
-
-            # ---------- Passwords ----------
-            if [ "$SET_PASSWORDS" = "true" ]; then
-              echo "▶ Setting root password..."
-              echo "root:${ROOT_PASSWORD}" | sudo chpasswd
-
-              echo "▶ Ensuring admin user '${ADMIN_USER}' exists..."
-              if ! id "${ADMIN_USER}" >/dev/null 2>&1; then
-                sudo useradd -m -s /bin/bash "${ADMIN_USER}"
-              fi
-              echo "${ADMIN_USER}:${ADMIN_PASSWORD}" | sudo chpasswd
-
-              # Grant sudo
-              case "$PKG" in
-                apt) sudo usermod -aG sudo "${ADMIN_USER}" ;;
-                dnf) sudo usermod -aG wheel "${ADMIN_USER}" ;;
-                pacman) sudo usermod -aG wheel "${ADMIN_USER}" ;;
-              esac
-
-              # Passwordless sudo for admin
-              echo "${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL" | \
-                sudo tee /etc/sudoers.d/90-${ADMIN_USER} >/dev/null
-              sudo chmod 440 /etc/sudoers.d/90-${ADMIN_USER}
-            fi
-
-            # ---------- SSH server ----------
-            if [ "$ENABLE_SSH" = "true" ]; then
-              echo "▶ Ensuring OpenSSH server..."
-              case "$PKG" in
-                apt|dnf) install openssh-server ;;
-                pacman)  install openssh ;;
-              esac
-
-              # Ensure password auth (needed for PuTTY password login)
-              sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' \
-                /etc/ssh/sshd_config
-
-              if [ "$ALLOW_ROOT" = "true" ]; then
-                sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' \
-                  /etc/ssh/sshd_config
-                echo "⚠️  Root SSH login ENABLED"
-              else
-                sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' \
-                  /etc/ssh/sshd_config
-              fi
-
-              sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd
-              sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
-            fi
-
-            # ---------- Desktop + xrdp ----------
-            if [ "$ENABLE_RDP" = "true" ]; then
-              echo "▶ Installing desktop: $DESKTOP"
-              case "$DESKTOP" in
-                xfce)
-                  case "$PKG" in
-                    apt)    install xfce4 xfce4-goodies dbus-x11 ;;
-                    dnf)    sudo dnf groupinstall -y "Xfce Desktop" ;;
-                    pacman) install xfce4 xfce4-goodies ;;
-                  esac
-                  SESSION="xfce4-session" ;;
-                gnome)
-                  case "$PKG" in
-                    apt)    install ubuntu-desktop-minimal gnome-session dbus-x11 ;;
-                    dnf)    sudo dnf groupinstall -y "Workstation" ;;
-                    pacman) install gnome gnome-extra ;;
-                  esac
-                  SESSION="gnome-session" ;;
-                kde)
-                  case "$PKG" in
-                    apt)    install kde-plasma-desktop dbus-x11 ;;
-                    dnf)    sudo dnf groupinstall -y "KDE Plasma Workspaces" ;;
-                    pacman) install plasma-meta kde-applications ;;
-                  esac
-                  SESSION="startplasma-x11" ;;
-                lxqt)
-                  case "$PKG" in
-                    apt)    install lxqt-core dbus-x11 ;;
-                    dnf)    sudo dnf groupinstall -y "LXQt Desktop" ;;
-                    pacman) install lxqt ;;
-                  esac
-                  SESSION="startlxqt" ;;
-                none) SESSION="" ;;
-              esac
-
-              echo "▶ Installing xrdp..."
-              install xrdp
-
-              if [ -n "$SESSION" ]; then
-                echo "$SESSION" > "$HOME/.xsession"
-                chmod +x "$HOME/.xsession"
-              fi
-
-              if [ "$PKG" = "apt" ]; then
-                sudo adduser xrdp ssl-cert || true
-                sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla >/dev/null <<'EOF'
-            [Allow Colord all Users]
-            Identity=unix-user:*
-            Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-            ResultAny=no
-            ResultInactive=no
-            ResultActive=yes
-            EOF
-              fi
-
-              sudo systemctl enable --now xrdp
-              sudo systemctl restart xrdp
-            fi
-
-            # ---------- Firewall ----------
-            if command -v ufw >/dev/null 2>&1; then
-              sudo ufw allow 22/tcp || true
-              [ "$ENABLE_RDP" = "true" ] && sudo ufw allow 3389/tcp || true
-              sudo ufw allow in on tailscale0 || true
-            fi
-
-            echo "✅ Setup complete"
-            TSIP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "  Tailscale IP : ${TSIP:-<run tailscale up on target>}"
-            echo "  SSH (PuTTY)  : ssh ${ADMIN_USER}@${TSIP:-<ip>}"
-            echo "  RDP (mstsc)  : ${TSIP:-<ip>}:3389"
-            echo "  Admin user   : ${ADMIN_USER}"
-            echo "  Root         : ${ALLOW_ROOT} (root login)"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "════════════════════════════════════════"
+          echo " Tailscale IP : $IP"
+          echo " MagicDNS     : $DNS"
+          echo " SSH          : ssh <user>@$IP"
+          echo " RDP          : mstsc /v:$IP:3389"
+          echo "════════════════════════════════════════"
