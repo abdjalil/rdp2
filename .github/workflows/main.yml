@@ -1,84 +1,20 @@
-name: How to Connect (Manual)
-
-on:
-  workflow_dispatch:
-    inputs:
-      target_ip:
-        description: 'Tailscale IP of your Linux machine (from: tailscale status)'
-        required: true
-        default: '100.x.x.x'
-      username:
-        description: 'Your Linux username on the target'
-        required: true
-        default: 'user'
-      ssh_port:
-        description: 'SSH port'
-        required: false
-        default: '22'
-      rdp_port:
-        description: 'RDP port'
-        required: false
-        default: '3389'
-
+name: ssh-box
+on: workflow_dispatch
 jobs:
-  print-guide:
+  ssh:
     runs-on: ubuntu-latest
     steps:
-      - name: Print connection guide
+      - name: Start sshd
         run: |
-          IP="${{ inputs.target_ip }}"
-          USER="${{ inputs.username }}"
-          SSHP="${{ inputs.ssh_port }}"
-          RDPP="${{ inputs.rdp_port }}"
+          sudo apt-get update && sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          echo 'runner:runnerpass' | sudo chpasswd
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+          sudo /usr/sbin/sshd
 
-          {
-            echo "# 🔗 Manual Connection Guide"
-            echo ""
-            echo "## 📡 Target"
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Tailscale IP | \`$IP\` |"
-            echo "| User | \`$USER\` |"
-            echo ""
-            echo "## 🖥️ SSH (PuTTY / terminal)"
-            echo '```bash'
-            echo "ssh -p $SSHP $USER@$IP"
-            echo '```'
-            echo ""
-            echo "### PuTTY settings"
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Host Name (or IP address) | \`$IP\` |"
-            echo "| Port | \`$SSHP\` |"
-            echo "| Connection type | SSH |"
-            echo ""
-            echo "## 🪟 RDP (Windows Remote Desktop)"
-            echo '```powershell'
-            echo "mstsc /v:$IP:$RDPP"
-            echo '```'
-            echo ""
-            echo "### mstsc fields"
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Computer | \`$IP:$RDPP\` |"
-            echo "| Username | \`$USER\` |"
-            echo "| Password | *your Linux login password* |"
-            echo ""
-            echo "## 🧭 Steps"
-            echo "1. Install **Tailscale** on your Windows PC: https://tailscale.com/download"
-            echo "2. Log in with the **same account** as your Linux machine"
-            echo "3. Verify: \`tailscale status\` — you should see the target"
-            echo "4. Open PuTTY → fill fields above → **Open**"
-            echo "5. Or open Remote Desktop → enter \`$IP:$RDPP\` → connect"
-            echo ""
-            echo "## ⚠️ If it fails"
-            echo "- Target offline → \`tailscale status\` shows it as \`offline\`"
-            echo "- SSH refused → on target: \`sudo systemctl status ssh\`"
-            echo "- RDP black screen → use XFCE, log out locally first"
-            echo "- ACL blocks → check Tailscale admin → Access Controls"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "════════════════════════════════════════"
-          echo "SSH : ssh -p $SSHP $USER@$IP"
-          echo "RDP : mstsc /v:$IP:$RDPP"
-          echo "════════════════════════════════════════"
+      - name: Start tunnel
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cf
+          chmod +x cf
+          ./cf tunnel --url tcp://localhost:22
