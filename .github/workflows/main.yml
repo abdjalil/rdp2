@@ -1,119 +1,84 @@
-name: Get Tailscale RDP/SSH Link
+name: How to Connect (Manual)
 
 on:
   workflow_dispatch:
     inputs:
-      target_name:
-        description: 'Tailscale machine name (e.g. my-linux-box)'
+      target_ip:
+        description: 'Tailscale IP of your Linux machine (from: tailscale status)'
         required: true
-        default: 'my-linux-box'
+        default: '100.x.x.x'
+      username:
+        description: 'Your Linux username on the target'
+        required: true
+        default: 'user'
+      ssh_port:
+        description: 'SSH port'
+        required: false
+        default: '22'
+      rdp_port:
+        description: 'RDP port'
+        required: false
+        default: '3389'
 
 jobs:
-  get-link:
-    name: Resolve Tailscale address for ${{ inputs.target_name }}
+  print-guide:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          auth-key: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          tags: tag:ci
-
-      - name: Resolve target and print connection info
-        id: resolve
+      - name: Print connection guide
         run: |
-          set -euo pipefail
-          TARGET="${{ inputs.target_name }}"
-
-          for i in $(seq 1 12); do
-            tailscale status --json > /tmp/ts.json 2>/dev/null && break
-            sleep 5
-          done
-
-          IP=$(jq -r --arg t "$TARGET" '
-            .Peer[]?
-            | select(
-                (.DNSName // "" | sub("\\.$";"")) as $dns
-                | (.HostName // "")
-                | . == $t
-                or $dns == $t
-                or ($dns | startswith($t + "."))
-              )
-            | .TailscaleIPs[0]
-          ' /tmp/ts.json | head -n1)
-
-          if [ -z "$IP" ] || [ "$IP" = "null" ]; then
-            echo "❌ '$TARGET' not found. Available peers:"
-            jq -r '.Peer[]? | "  - \(.HostName)  (\(.TailscaleIPs[0]))  [\(.OS)]"' /tmp/ts.json
-            exit 1
-          fi
-
-          DNS=$(jq -r --arg t "$TARGET" '
-            .Peer[]?
-            | select(
-                (.DNSName // "" | sub("\\.$";"")) as $dns
-                | (.HostName // "")
-                | . == $t or $dns == $t or ($dns | startswith($t + "."))
-              )
-            | .DNSName
-          ' /tmp/ts.json | head -n1 | sed 's/\.$//')
-
-          echo "ip=$IP"   >> "$GITHUB_OUTPUT"
-          echo "dns=$DNS" >> "$GITHUB_OUTPUT"
-
-      - name: Print connection links
-        run: |
-          IP="${{ steps.resolve.outputs.ip }}"
-          DNS="${{ steps.resolve.outputs.dns }}"
+          IP="${{ inputs.target_ip }}"
+          USER="${{ inputs.username }}"
+          SSHP="${{ inputs.ssh_port }}"
+          RDPP="${{ inputs.rdp_port }}"
 
           {
-            echo "# 🔗 Connection Links for \`${{ inputs.target_name }}\`"
+            echo "# 🔗 Manual Connection Guide"
             echo ""
-            echo "## 🌐 Tailscale IP"
-            echo '```'
-            echo "$IP"
+            echo "## 📡 Target"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tailscale IP | \`$IP\` |"
+            echo "| User | \`$USER\` |"
+            echo ""
+            echo "## 🖥️ SSH (PuTTY / terminal)"
+            echo '```bash'
+            echo "ssh -p $SSHP $USER@$IP"
             echo '```'
             echo ""
-            echo "## 🖥️ SSH — PuTTY / terminal"
-            echo '```'
-            echo "ssh <your-user>@$IP"
-            echo "# or MagicDNS:"
-            echo "ssh <your-user>@$DNS"
-            echo '```'
-            echo ""
-            echo "### PuTTY fields"
+            echo "### PuTTY settings"
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Host Name | \`$IP\` |"
-            echo "| Port | \`22\` |"
+            echo "| Host Name (or IP address) | \`$IP\` |"
+            echo "| Port | \`$SSHP\` |"
             echo "| Connection type | SSH |"
             echo ""
-            echo "## 🪟 RDP — Windows mstsc"
-            echo '```'
-            echo "mstsc /v:$IP:3389"
-            echo "# or MagicDNS:"
-            echo "mstsc /v:$DNS:3389"
+            echo "## 🪟 RDP (Windows Remote Desktop)"
+            echo '```powershell'
+            echo "mstsc /v:$IP:$RDPP"
             echo '```'
             echo ""
-            echo "### Remote Desktop fields"
+            echo "### mstsc fields"
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Computer | \`$IP:3389\` |"
-            echo "| Username | *your Linux user* |"
-            echo "| Password | *your Linux password* |"
+            echo "| Computer | \`$IP:$RDPP\` |"
+            echo "| Username | \`$USER\` |"
+            echo "| Password | *your Linux login password* |"
             echo ""
-            echo "## 📋 Copy-paste"
-            echo '```'
-            echo "SSH: ssh <user>@$IP"
-            echo "RDP: mstsc /v:$IP:3389"
-            echo '```'
+            echo "## 🧭 Steps"
+            echo "1. Install **Tailscale** on your Windows PC: https://tailscale.com/download"
+            echo "2. Log in with the **same account** as your Linux machine"
+            echo "3. Verify: \`tailscale status\` — you should see the target"
+            echo "4. Open PuTTY → fill fields above → **Open**"
+            echo "5. Or open Remote Desktop → enter \`$IP:$RDPP\` → connect"
+            echo ""
+            echo "## ⚠️ If it fails"
+            echo "- Target offline → \`tailscale status\` shows it as \`offline\`"
+            echo "- SSH refused → on target: \`sudo systemctl status ssh\`"
+            echo "- RDP black screen → use XFCE, log out locally first"
+            echo "- ACL blocks → check Tailscale admin → Access Controls"
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "════════════════════════════════════════"
-          echo " Tailscale IP : $IP"
-          echo " MagicDNS     : $DNS"
-          echo " SSH          : ssh <user>@$IP"
-          echo " RDP          : mstsc /v:$IP:3389"
+          echo "SSH : ssh -p $SSHP $USER@$IP"
+          echo "RDP : mstsc /v:$IP:$RDPP"
           echo "════════════════════════════════════════"
