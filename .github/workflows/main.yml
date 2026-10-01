@@ -1,5 +1,6 @@
 name: ssh-box
 on: workflow_dispatch
+
 jobs:
   ssh:
     runs-on: ubuntu-latest
@@ -13,8 +14,19 @@ jobs:
           sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
           sudo /usr/sbin/sshd
 
-      - name: Start tunnel
+      - name: Start TCP tunnel and print host:port
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cf
           chmod +x cf
-          ./cf tunnel --url tcp://localhost:22
+          ./cf tunnel --url tcp://localhost:22 2>&1 | tee tunnel.log &
+          for i in $(seq 1 30); do
+            grep -qo 'tcp://[^ ]*trycloudflare.com:[0-9]*' tunnel.log && break
+            sleep 2
+          done
+          echo "==================================================="
+          echo "PuTTY -> Host: $(grep -o 'tcp://[^ ]*trycloudflare.com' tunnel.log | head -1 | sed 's|tcp://||')"
+          echo "PuTTY -> Port: $(grep -o 'trycloudflare.com:[0-9]*' tunnel.log | head -1 | cut -d: -f2)"
+          echo "PuTTY -> User: runner"
+          echo "PuTTY -> Pass: runnerpass"
+          echo "==================================================="
+          tail -f tunnel.log
